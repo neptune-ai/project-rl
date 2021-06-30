@@ -7,6 +7,7 @@ import random
 from collections import namedtuple, deque
 from itertools import count
 
+import gif
 import gym
 import matplotlib.pyplot as plt
 import neptune.new as neptune
@@ -17,6 +18,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms as T
 from PIL import Image
+
+gif.options.matplotlib["dpi"] = 300
 
 # Create run
 run = neptune.init(
@@ -109,6 +112,17 @@ def get_screen():
     return resize(screen).unsqueeze(0)
 
 
+@gif.frame
+def get_screen_as_ax(screen):
+    plt.figure()
+    _, ax = plt.subplots(1, 1,)
+    ax.imshow(
+        screen.cpu().squeeze(0).permute(1, 2, 0).numpy(),
+        interpolation='none'
+    )
+    ax.axis("off")
+
+
 def env_start_screen():
     plt.figure()
     _, ax = plt.subplots(1, 1,)
@@ -117,16 +131,20 @@ def env_start_screen():
         interpolation='none'
     )
     ax.axis("off")
-    run["visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
+    run["training/visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
     plt.close("all")
 
+
 # Training
-BATCH_SIZE = 128
-GAMMA = 0.999
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 200
-TARGET_UPDATE = 10
+parameters = {
+    "BATCH_SIZE": 128,
+    "GAMMA": 0.999,
+    "EPS_START": 0.9,
+    "EPS_END": 0.05,
+    "EPS_DECAY": 200,
+    "TARGET_UPDATE": 10,
+}
+run["training/parameters"] = parameters
 
 env.reset()
 init_screen = get_screen()
@@ -147,7 +165,7 @@ optimizer = optim.RMSprop(policy_net.parameters())
 replay_mem = 10000
 
 memory = ReplayMemory(replay_mem)
-run["agent/replay_memory/size"] = replay_mem
+run["training/parameters/replay_memory_size"] = replay_mem
 
 steps_done = 0
 
@@ -155,8 +173,8 @@ steps_done = 0
 def select_action(state):
     global steps_done
     sample = random.random()
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * \
-        math.exp(-1. * steps_done / EPS_DECAY)
+    eps_threshold = parameters["EPS_END"] + (parameters["EPS_START"] - parameters["EPS_END"]) * \
+        math.exp(-1. * steps_done / parameters["EPS_DECAY"])
     steps_done += 1
     if sample > eps_threshold:
         with torch.no_grad():
@@ -179,9 +197,9 @@ def plot_durations():
 
 # Training loop
 def optimize_model():
-    if len(memory) < BATCH_SIZE:
+    if len(memory) < parameters["BATCH_SIZE"]:
         return
-    transitions = memory.sample(BATCH_SIZE)
+    transitions = memory.sample(parameters["BATCH_SIZE"])
     batch = Transition(*zip(*transitions))
     non_final_mask = torch.tensor(
         tuple(
@@ -200,9 +218,9 @@ def optimize_model():
     action_batch = torch.cat(batch.action)
     reward_batch = torch.cat(batch.reward)
     state_action_values = policy_net(state_batch).gather(1, action_batch)
-    next_state_values = torch.zeros(BATCH_SIZE, device=device)
+    next_state_values = torch.zeros(parameters["BATCH_SIZE"], device=device)
     next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0].detach()
-    expected_state_action_values = (next_state_values * GAMMA) + reward_batch
+    expected_state_action_values = (next_state_values * parameters["GAMMA"]) + reward_batch
 
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
@@ -219,18 +237,24 @@ def optimize_model():
 
 
 # Below, you can find the main training loop.
-num_episodes = 50
+num_episodes = 61
 run["training/params/num_episodes"] = num_episodes
 
 for i_episode in range(num_episodes):
     # Initialize the environment and state
     env.reset()
-    env_start_screen()
+    if i_episode == 0:
+        env_start_screen()
     last_screen = get_screen()
     current_screen = get_screen()
     state = current_screen - last_screen
     cum_reward = 0
+    frames = []
     for t in count():
+        # gif
+        frame = get_screen_as_ax(current_screen)
+        frames.append(frame)
+
         # Select and perform an action
         action = select_action(state)
         _, reward, done, _ = env.step(action.item())
@@ -257,10 +281,26 @@ for i_episode in range(num_episodes):
             episode_durations.append(t + 1)
             plot_durations()
             run["training/episode_reward"].log(value=cum_reward, step=i_episode)
+            if i_episode % 10 == 0:
+                frames_path = "episode_{}.gif".format(i_episode)
+                gif.save(
+                    frames,
+                    frames_path,
+                    duration=int(len(frames)/10),
+                    unit="s",
+                    between="startend"
+                )
+                run["training/visualizations/episode_{}".format(i_episode)].upload(
+                    neptune.types.File(frames_path)
+                )
+                plt.close("all")
             break
-    # Update the target network, copying all weights and biases in DQN
-    if i_episode % TARGET_UPDATE == 0:
+    if i_episode % parameters["TARGET_UPDATE"] == 0:
         target_net.load_state_dict(policy_net.state_dict())
+
+# Log model weights
+torch.save(policy_net.state_dict(), 'agent.pth')
+run['agent/model_dict'].upload('agent.pth')
 
 print('Complete')
 env.render()
