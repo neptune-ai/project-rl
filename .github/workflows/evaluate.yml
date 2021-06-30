@@ -6,6 +6,8 @@ on:
 jobs:
   dqn-evaluation:
     runs-on: ubuntu-latest
+    env:
+      NEPTUNE_API_TOKEN: ${{ secrets.NEPTUNE_API_TOKEN }}
     steps:
       - uses: actions/checkout@v2
       - uses: actions/setup-python@v2
