@@ -1,0 +1,22 @@
+name: evaluate-agent
+on:
+  schedule:
+    - cron: '*/30 6 * * *' # Run once daily at arbitrary time (6:30 AM UTC)
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+jobs:
+  dqn-evaluation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+        with:
+          python-version: 3.6
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ci-cd/requirements.txt
+      - name: Evaluate agent
+        run: python ci-cd/evaluate.py
