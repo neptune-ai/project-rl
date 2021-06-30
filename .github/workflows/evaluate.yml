@@ -2,9 +2,6 @@ name: evaluate-agent
 on:
   schedule:
     - cron: '*/30 6 * * *' # Run once daily at arbitrary time (6:30 AM UTC)
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 jobs:
   dqn-evaluation:
