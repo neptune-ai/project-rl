@@ -1,3 +1,7 @@
+# adapted from:
+# https://github.com/pytorch/tutorials/blob/master/intermediate_source/reinforcement_q_learning.py
+# date accessed: 2021.06.30
+
 import math
 import random
 from collections import namedtuple, deque
