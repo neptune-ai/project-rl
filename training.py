@@ -28,11 +28,12 @@ run = neptune.init(
     tags=["tmp"],
 )
 
-env = gym.make('CartPole-v0').unwrapped
+env = gym.make("CartPole-v0").unwrapped
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Log device type used for training
-run["environment/device"] = device
+# Log env info
+run["training/environment/device_name"] = device
+run["training/env_name"] = "CartPole-v0"
 
 # Replay Memory
 Transition = namedtuple('Transition',
