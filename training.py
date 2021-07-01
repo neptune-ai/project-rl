@@ -23,7 +23,7 @@ from PIL import Image
 run = neptune.init(
     project="common/project-rl",
     name="training",
-    tags=["training", "CartPole"],
+    tags=["training", "CartPole", "seed"],
 )
 
 parameters = {
@@ -32,7 +32,7 @@ parameters = {
     "eps_end": 0.05,
     "eps_decay": 200,
     "gamma": 0.999,
-    "num_episodes": 61,
+    "num_episodes": 51,
     "target_update": 10,
 }
 
