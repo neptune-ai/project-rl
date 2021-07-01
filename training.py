@@ -21,6 +21,27 @@ from PIL import Image
 
 gif.options.matplotlib["dpi"] = 300
 
+# (npt) Create run
+run = neptune.init(
+    project="common/project-rl",
+    name="training",
+    tags=["training", "CartPole"],
+)
+
+# Parameters as dict
+parameters = {
+    "batch_size": 128,
+    "eps_start": 0.9,
+    "eps_end": 0.05,
+    "eps_decay": 200,
+    "gamma": 0.999,
+    "num_episodes": 61,
+    "target_update": 10,
+}
+
+# (npt) log dict as parameters
+run["training/parameters"] = parameters
+
 # Replay Memory
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
@@ -73,25 +94,13 @@ class DQN(nn.Module):
         return self.head(x.view(x.size(0), -1))
 
 
-# Create run
-run = neptune.init(
-    project="common/project-rl",
-    name="training",
-    tags=["tmp"],
-)
-
+# (npt) log environment info as I define it
 env = gym.make("CartPole-v0").unwrapped
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Log env info
 run["training/environment/device_name"] = device
 run["training/env_name"] = "CartPole-v0"
 
 
-def get_cart_location(screen_width):
-    world_width = env.x_threshold * 2
-    scale = screen_width / world_width
-    return int(env.state[0] * scale + screen_width / 2.0)  # MIDDLE OF CART
 
 
 def get_screen():
@@ -99,7 +108,7 @@ def get_screen():
     _, screen_height, screen_width = screen.shape
     screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
     view_width = int(screen_width * 0.6)
-    cart_location = get_cart_location(screen_width)
+    cart_location = _get_cart_location(screen_width)
     if cart_location < view_width // 2:
         slice_range = slice(view_width)
     elif cart_location > (screen_width - view_width // 2):
@@ -137,17 +146,6 @@ def env_start_screen():
 
 
 # Training
-parameters = {
-    "BATCH_SIZE": 128,
-    "GAMMA": 0.999,
-    "EPS_START": 0.9,
-    "EPS_END": 0.05,
-    "EPS_DECAY": 200,
-    "TARGET_UPDATE": 10,
-    "num_episodes": 61,
-}
-run["training/parameters"] = parameters
-
 env.reset()
 init_screen = get_screen()
 _, _, screen_height, screen_width = init_screen.shape
@@ -174,8 +172,8 @@ steps_done = 0
 def select_action(state):
     global steps_done
     sample = random.random()
-    eps_threshold = parameters["EPS_END"] + (parameters["EPS_START"] - parameters["EPS_END"]) * \
-        math.exp(-1. * steps_done / parameters["EPS_DECAY"])
+    eps_threshold = parameters["eps_end"] + (parameters["eps_start"] - parameters["eps_end"]) * \
+        math.exp(-1. * steps_done / parameters["eps_decay"])
     steps_done += 1
     if sample > eps_threshold:
         with torch.no_grad():
@@ -195,9 +193,9 @@ def plot_durations():
 
 # Training loop
 def optimize_model():
-    if len(memory) < parameters["BATCH_SIZE"]:
+    if len(memory) < parameters["batch_size"]:
         return
-    transitions = memory.sample(parameters["BATCH_SIZE"])
+    transitions = memory.sample(parameters["batch_size"])
     batch = Transition(*zip(*transitions))
     non_final_mask = torch.tensor(
         tuple(
@@ -216,9 +214,9 @@ def optimize_model():
     action_batch = torch.cat(batch.action)
     reward_batch = torch.cat(batch.reward)
     state_action_values = policy_net(state_batch).gather(1, action_batch)
-    next_state_values = torch.zeros(parameters["BATCH_SIZE"], device=device)
+    next_state_values = torch.zeros(parameters["batch_size"], device=device)
     next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0].detach()
-    expected_state_action_values = (next_state_values * parameters["GAMMA"]) + reward_batch
+    expected_state_action_values = (next_state_values * parameters["gamma"]) + reward_batch
 
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
@@ -300,7 +298,7 @@ for i_episode in range(parameters["num_episodes"]):
                 )
                 plt.close("all")
             break
-    if i_episode % parameters["TARGET_UPDATE"] == 0:
+    if i_episode % parameters["target_update"] == 0:
         target_net.load_state_dict(policy_net.state_dict())
 
 env.close()
@@ -308,3 +306,10 @@ env.close()
 # Log model weights
 torch.save(policy_net.state_dict(), 'policy_net.pth')
 run['agent/policy_net'].upload('policy_net.pth')
+
+
+
+def _get_cart_location(screen_width):
+    world_width = env.x_threshold * 2
+    scale = screen_width / world_width
+    return int(env.state[0] * scale + screen_width / 2.0)  # MIDDLE OF CART
