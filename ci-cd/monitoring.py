@@ -13,7 +13,6 @@ project = neptune.get_project(
 runs_table_df = project.fetch_runs_table(tag="in-prod").to_pandas()
 best_run_id = runs_table_df["sys/id"].values[0]
 
-print(best_run_id)
 # Resume run
 run = neptune.init(
     api_token=os.getenv('NEPTUNE_API_TOKEN'),
