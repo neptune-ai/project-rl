@@ -21,25 +21,17 @@ from PIL import Image
 
 gif.options.matplotlib["dpi"] = 300
 
-# Create run
-run = neptune.init(
-    project="common/project-rl",
-    name="training",
-    tags=["tmp"],
-)
-
-env = gym.make("CartPole-v0").unwrapped
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Log env info
-run["training/environment/device_name"] = device
-run["training/env_name"] = "CartPole-v0"
-
 # Replay Memory
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
+# Input extraction
+resize = T.Compose([T.ToPILImage(),
+                    T.Resize(40, interpolation=Image.CUBIC),
+                    T.ToTensor()])
 
+
+# DQN replay memory
 class ReplayMemory(object):
     def __init__(self, capacity):
         self.memory = deque([], maxlen=capacity)
@@ -55,9 +47,8 @@ class ReplayMemory(object):
         return len(self.memory)
 
 
-# DQN algorithm
+# DQN Module
 class DQN(nn.Module):
-
     def __init__(self, h, w, outputs):
         super(DQN, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
@@ -82,10 +73,19 @@ class DQN(nn.Module):
         return self.head(x.view(x.size(0), -1))
 
 
-# Input extraction
-resize = T.Compose([T.ToPILImage(),
-                    T.Resize(40, interpolation=Image.CUBIC),
-                    T.ToTensor()])
+# Create run
+run = neptune.init(
+    project="common/project-rl",
+    name="training",
+    tags=["tmp"],
+)
+
+env = gym.make("CartPole-v0").unwrapped
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Log env info
+run["training/environment/device_name"] = device
+run["training/env_name"] = "CartPole-v0"
 
 
 def get_cart_location(screen_width):
@@ -132,7 +132,7 @@ def env_start_screen():
         interpolation='none'
     )
     ax.axis("off")
-    run["training/visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
+    run["visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
     plt.close("all")
 
 
@@ -144,6 +144,7 @@ parameters = {
     "EPS_END": 0.05,
     "EPS_DECAY": 200,
     "TARGET_UPDATE": 10,
+    "num_episodes": 61,
 }
 run["training/parameters"] = parameters
 
@@ -153,7 +154,6 @@ _, _, screen_height, screen_width = init_screen.shape
 
 # Get number of actions from gym action space
 n_actions = env.action_space.n
-
 run["agent/n_actions"] = n_actions
 
 policy_net = DQN(screen_height, screen_width, n_actions).to(device)
@@ -163,10 +163,10 @@ target_net.eval()
 
 optimizer = optim.RMSprop(policy_net.parameters())
 
-replay_mem = 10000
-
-memory = ReplayMemory(replay_mem)
-run["training/parameters/replay_memory_size"] = replay_mem
+# You can add more parameters
+replay_memory = 10000
+memory = ReplayMemory(replay_memory)
+run["training/parameters/replay_memory_size"] = replay_memory
 
 steps_done = 0
 
@@ -179,9 +179,6 @@ def select_action(state):
     steps_done += 1
     if sample > eps_threshold:
         with torch.no_grad():
-            # t.max(1) will return largest column value of each row.
-            # second column on max result is index of where max element was
-            # found, so we pick action with the larger expected reward.
             return policy_net(state).max(1)[1].view(1, 1)
     else:
         return torch.tensor([[random.randrange(n_actions)]], device=device, dtype=torch.long)
@@ -226,7 +223,7 @@ def optimize_model():
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
-    run["training/criterion"] = "SmoothL1Loss"
+    run["training/parameters/criterion"] = "SmoothL1Loss"
     run["training/loss"].log(float(loss.detach().cpu().numpy()))
 
     # Optimize the model
@@ -237,11 +234,8 @@ def optimize_model():
     optimizer.step()
 
 
-# Below, you can find the main training loop.
-num_episodes = 61
-run["training/params/num_episodes"] = num_episodes
-
-for i_episode in range(num_episodes):
+# Main training loop
+for i_episode in range(parameters["num_episodes"]):
     # Initialize the environment and state
     env.reset()
     if i_episode == 0:
@@ -252,9 +246,19 @@ for i_episode in range(num_episodes):
     cum_reward = 0
     frames = []
     for t in count():
-        # gif
+        # Collect frames to make gif
         frame = get_screen_as_ax(current_screen)
         frames.append(frame)
+
+        # Collect model inputs as series of images
+        if i_episode % 10 == 0:
+            input_screen = state.detach().cpu().numpy().squeeze()
+            input_screen = (input_screen - input_screen.min()) / (input_screen.max() - input_screen.min() + 0.000001)
+            input_screen = np.transpose(input_screen, (1, 2, 0))
+
+            run["visualizations/episode_{}/input_screens".format(i_episode)].log(
+                neptune.types.File.as_image(input_screen)
+            )
 
         # Select and perform an action
         action = select_action(state)
@@ -281,7 +285,7 @@ for i_episode in range(num_episodes):
         if done:
             episode_durations.append(t + 1)
             plot_durations()
-            run["training/episode_reward"].log(value=cum_reward, step=i_episode)
+            run["training/episode/reward"].log(value=cum_reward, step=i_episode)
             if i_episode % 10 == 0:
                 frames_path = "episode_{}.gif".format(i_episode)
                 gif.save(
@@ -291,7 +295,7 @@ for i_episode in range(num_episodes):
                     unit="s",
                     between="startend"
                 )
-                run["training/visualizations/episode_{}".format(i_episode)].upload(
+                run["visualizations/episode_{}/episode_recording".format(i_episode)].upload(
                     neptune.types.File(frames_path)
                 )
                 plt.close("all")
@@ -299,10 +303,8 @@ for i_episode in range(num_episodes):
     if i_episode % parameters["TARGET_UPDATE"] == 0:
         target_net.load_state_dict(policy_net.state_dict())
 
-# Log model weights
-torch.save(policy_net.state_dict(), 'agent.pth')
-run['agent/model_dict'].upload('agent.pth')
-
-print('Complete')
-env.render()
 env.close()
+
+# Log model weights
+torch.save(policy_net.state_dict(), 'policy_net.pth')
+run['agent/policy_net'].upload('policy_net.pth')
