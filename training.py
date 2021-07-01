@@ -19,16 +19,13 @@ import torch.optim as optim
 import torchvision.transforms as T
 from PIL import Image
 
-gif.options.matplotlib["dpi"] = 300
-
-# (npt) Create run
+# (neptune) Create run
 run = neptune.init(
     project="common/project-rl",
     name="training",
     tags=["training", "CartPole"],
 )
 
-# Parameters as dict
 parameters = {
     "batch_size": 128,
     "eps_start": 0.9,
@@ -39,20 +36,21 @@ parameters = {
     "target_update": 10,
 }
 
-# (npt) log dict as parameters
+# (neptune) Log dict as parameters
 run["training/parameters"] = parameters
 
-# Replay Memory
+gif.options.matplotlib["dpi"] = 300
+steps_done = 0
+episode_durations = []
+
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
-# Input extraction
 resize = T.Compose([T.ToPILImage(),
                     T.Resize(40, interpolation=Image.CUBIC),
                     T.ToTensor()])
 
 
-# DQN replay memory
 class ReplayMemory(object):
     def __init__(self, capacity):
         self.memory = deque([], maxlen=capacity)
@@ -68,7 +66,6 @@ class ReplayMemory(object):
         return len(self.memory)
 
 
-# DQN Module
 class DQN(nn.Module):
     def __init__(self, h, w, outputs):
         super(DQN, self).__init__()
@@ -94,16 +91,7 @@ class DQN(nn.Module):
         return self.head(x.view(x.size(0), -1))
 
 
-# (npt) log environment info as I define it
-env = gym.make("CartPole-v0").unwrapped
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-run["training/environment/device_name"] = device
-run["training/env_name"] = "CartPole-v0"
-
-
-
-
-def get_screen():
+def _get_screen():
     screen = env.render(mode='rgb_array').transpose((2, 0, 1))
     _, screen_height, screen_width = screen.shape
     screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
@@ -122,8 +110,14 @@ def get_screen():
     return resize(screen).unsqueeze(0)
 
 
+def _get_cart_location(screen_width):
+    world_width = env.x_threshold * 2
+    scale = screen_width / world_width
+    return int(env.state[0] * scale + screen_width / 2.0)
+
+
 @gif.frame
-def get_screen_as_ax(screen):
+def _get_screen_as_ax(screen):
     plt.figure()
     _, ax = plt.subplots(1, 1,)
     ax.imshow(
@@ -133,24 +127,41 @@ def get_screen_as_ax(screen):
     ax.axis("off")
 
 
-def env_start_screen():
+def _get_env_start_screen():
     plt.figure()
     _, ax = plt.subplots(1, 1,)
     ax.imshow(
-        get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
+        _get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
         interpolation='none'
     )
     ax.axis("off")
-    run["visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
-    plt.close("all")
+    return ax.figure
 
 
-# Training
+def _plot_durations():
+    run["training/episode/duration"].log(value=episode_durations[-1], step=len(episode_durations))
+    avg = np.array(episode_durations).sum() / len(episode_durations)
+    run["training/episode/avg_duration"].log(value=float(avg), step=len(episode_durations))
+
+
+# (neptune) Log environment info as it's defined
+env_name = "CartPole-v0"
+rnd_seed = np.random.randint(low=1000000)
+
+env = gym.make(env_name).unwrapped
+env.seed(rnd_seed)
+
+run["training/env_name"] = env_name
+run["training/parameters/seed"] = rnd_seed
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+run["training/environment/device_name"] = device
+
 env.reset()
-init_screen = get_screen()
+init_screen = _get_screen()
 _, _, screen_height, screen_width = init_screen.shape
 
-# Get number of actions from gym action space
+# (neptune) Log agent metadata: number of actions from gym action space
 n_actions = env.action_space.n
 run["agent/n_actions"] = n_actions
 
@@ -161,12 +172,10 @@ target_net.eval()
 
 optimizer = optim.RMSprop(policy_net.parameters())
 
-# You can add more parameters
+# (neptune) Add more parameters to the "training/parameters" namespace
 replay_memory = 10000
 memory = ReplayMemory(replay_memory)
 run["training/parameters/replay_memory_size"] = replay_memory
-
-steps_done = 0
 
 
 def select_action(state):
@@ -182,16 +191,6 @@ def select_action(state):
         return torch.tensor([[random.randrange(n_actions)]], device=device, dtype=torch.long)
 
 
-episode_durations = []
-
-
-def plot_durations():
-    run["training/episode/duration"].log(value=episode_durations[-1], step=len(episode_durations))
-    avg = np.array(episode_durations).sum() / len(episode_durations)
-    run["training/episode/avg_duration"].log(value=float(avg), step=len(episode_durations))
-
-
-# Training loop
 def optimize_model():
     if len(memory) < parameters["batch_size"]:
         return
@@ -222,9 +221,10 @@ def optimize_model():
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
     run["training/parameters/criterion"] = "SmoothL1Loss"
+
+    # (neptune) Log loss, have it as a chart in neptune
     run["training/loss"].log(float(loss.detach().cpu().numpy()))
 
-    # Optimize the model
     optimizer.zero_grad()
     loss.backward()
     for param in policy_net.parameters():
@@ -234,21 +234,21 @@ def optimize_model():
 
 # Main training loop
 for i_episode in range(parameters["num_episodes"]):
-    # Initialize the environment and state
     env.reset()
+
+    # (neptune) Log single image
     if i_episode == 0:
-        env_start_screen()
-    last_screen = get_screen()
-    current_screen = get_screen()
+        run["visualizations/start_screen"].upload(neptune.types.File.as_image(_get_env_start_screen()))
+    last_screen = _get_screen()
+    current_screen = _get_screen()
     state = current_screen - last_screen
     cum_reward = 0
     frames = []
     for t in count():
-        # Collect frames to make gif
-        frame = get_screen_as_ax(current_screen)
+        frame = _get_screen_as_ax(current_screen)
         frames.append(frame)
 
-        # Collect model inputs as series of images
+        # (neptune) What my agent is looking at? Log series of images.
         if i_episode % 10 == 0:
             input_screen = state.detach().cpu().numpy().squeeze()
             input_screen = (input_screen - input_screen.min()) / (input_screen.max() - input_screen.min() + 0.000001)
@@ -258,31 +258,27 @@ for i_episode in range(parameters["num_episodes"]):
                 neptune.types.File.as_image(input_screen)
             )
 
-        # Select and perform an action
         action = select_action(state)
         _, reward, done, _ = env.step(action.item())
         cum_reward += reward
         reward = torch.tensor([reward], device=device)
 
-        # Observe new state
         last_screen = current_screen
-        current_screen = get_screen()
+        current_screen = _get_screen()
         if not done:
             next_state = current_screen - last_screen
         else:
             next_state = None
 
-        # Store the transition in memory
         memory.push(state, action, next_state, reward)
-
-        # Move to the next state
         state = next_state
 
-        # Perform one step of the optimization (on the policy network)
         optimize_model()
         if done:
             episode_durations.append(t + 1)
-            plot_durations()
+            _plot_durations()
+
+            # (neptune) Log reward as series of numbers
             run["training/episode/reward"].log(value=cum_reward, step=i_episode)
             if i_episode % 10 == 0:
                 frames_path = "episode_{}.gif".format(i_episode)
@@ -293,6 +289,8 @@ for i_episode in range(parameters["num_episodes"]):
                     unit="s",
                     between="startend"
                 )
+
+                # (neptune) Log gif to see episode recording
                 run["visualizations/episode_{}/episode_recording".format(i_episode)].upload(
                     neptune.types.File(frames_path)
                 )
@@ -303,13 +301,6 @@ for i_episode in range(parameters["num_episodes"]):
 
 env.close()
 
-# Log model weights
+# (neptune) Log model weights
 torch.save(policy_net.state_dict(), 'policy_net.pth')
 run['agent/policy_net'].upload('policy_net.pth')
-
-
-
-def _get_cart_location(screen_width):
-    world_width = env.x_threshold * 2
-    scale = screen_width / world_width
-    return int(env.state[0] * scale + screen_width / 2.0)  # MIDDLE OF CART
