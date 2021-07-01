@@ -43,8 +43,8 @@ gif.options.matplotlib["dpi"] = 300
 steps_done = 0
 episode_durations = []
 
-Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+Transition = namedtuple("Transition",
+                        ("state", "action", "next_state", "reward"))
 
 resize = T.Compose([T.ToPILImage(),
                     T.Resize(40, interpolation=Image.CUBIC),
@@ -92,7 +92,7 @@ class DQN(nn.Module):
 
 
 def _get_screen():
-    screen = env.render(mode='rgb_array').transpose((2, 0, 1))
+    screen = env.render(mode="rgb_array").transpose((2, 0, 1))
     _, screen_height, screen_width = screen.shape
     screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
     view_width = int(screen_width * 0.6)
@@ -122,7 +122,7 @@ def _get_screen_as_ax(screen):
     _, ax = plt.subplots(1, 1,)
     ax.imshow(
         screen.cpu().squeeze(0).permute(1, 2, 0).numpy(),
-        interpolation='none'
+        interpolation="none"
     )
     ax.axis("off")
 
@@ -132,7 +132,7 @@ def _get_env_start_screen():
     _, ax = plt.subplots(1, 1,)
     ax.imshow(
         _get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
-        interpolation='none'
+        interpolation="none"
     )
     ax.axis("off")
     return ax.figure
@@ -302,5 +302,5 @@ for i_episode in range(parameters["num_episodes"]):
 env.close()
 
 # (neptune) Log model weights
-torch.save(policy_net.state_dict(), 'policy_net.pth')
-run['agent/policy_net'].upload('policy_net.pth')
+torch.save(policy_net.state_dict(), "policy_net.pth")
+run["agent/policy_net"].upload("policy_net.pth")
