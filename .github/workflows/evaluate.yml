@@ -12,7 +12,7 @@ jobs:
         with:
           python-version: 3.6
       - name: Install OpenGL
-        run: apt-get install python-opengl
+        run: sudo apt-get install python-opengl
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
