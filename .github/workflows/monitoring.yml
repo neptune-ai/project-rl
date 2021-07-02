@@ -16,6 +16,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r ci-cd/monitor-requirements.txt
+          pip install -r ci-cd/monitor_requirements.txt
       - name: Get monitoring metadata
         run: python ci-cd/monitoring.py

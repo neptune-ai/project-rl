@@ -1,0 +1,5 @@
+neptune-client
+gym
+psutil==5.8.0
+torch==1.9.0+cpu
+torchvision==0.10.0+cpu

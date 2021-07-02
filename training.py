@@ -31,7 +31,7 @@ parameters = {
     "eps_start": 0.85,
     "eps_end": 0.01,
     "eps_decay": 10,
-    "gamma": 0.9,
+    "gamma": 0.8,
     "num_episodes": 51,
     "target_update": 10,
 }
