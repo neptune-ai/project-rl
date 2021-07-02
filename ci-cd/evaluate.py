@@ -26,13 +26,13 @@ project = neptune.get_project(
 # (neptune) Find latest run
 runs_table_df = project.fetch_runs_table().to_pandas()
 runs_table_df = runs_table_df.sort_values(by="sys/creation_time", ascending=False)
-best_run_id = runs_table_df["sys/id"].values[0]
+run_id = runs_table_df["sys/id"].values[0]
 
 # (neptune) Resume run
 run = neptune.init(
     api_token=os.getenv("NEPTUNE_API_TOKEN"),
     project="common/project-rl",
-    run=best_run_id,
+    run=run_id,
 )
 
 # (neptune) Download agent
