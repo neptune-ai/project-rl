@@ -166,3 +166,6 @@ for i_episode in range(eval_episodes):
             break
 
 env.close()
+
+# (neptune) Append tag "evaluated" to the run
+run["sys/tags"].add("evaluated")
