@@ -1,8 +1,10 @@
-name: evaluate-agent
+name: monitor-prod
 on:
+  schedule:
+    - cron: '12 */12 * * *' # At minute 12 past every 12th hour.
   workflow_dispatch:
 jobs:
-  dqn-evaluation:
+  prod-monitoring:
     runs-on: ubuntu-latest
     env:
       NEPTUNE_API_TOKEN: ${{ secrets.NEPTUNE_API_TOKEN }}
@@ -14,6 +16,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r ci-cd/eval-requirements.txt
-      - name: Evaluate agent
-        run: python ci-cd/evaluate.py
+          pip install -r ci-cd/monitor-requirements.txt
+      - name: Get monitoring metadata
+        run: python ci-cd/monitoring.py

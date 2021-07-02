@@ -7,6 +7,7 @@ import random
 from collections import namedtuple, deque
 from itertools import count
 
+import gif
 import gym
 import matplotlib.pyplot as plt
 import neptune.new as neptune
@@ -18,22 +19,36 @@ import torch.optim as optim
 import torchvision.transforms as T
 from PIL import Image
 
-# Create run
+# (neptune) Create run
 run = neptune.init(
     project="common/project-rl",
     name="training",
-    tags=["tmp"],
+    tags=["training", "CartPole"],
 )
 
-env = gym.make('CartPole-v0').unwrapped
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+parameters = {
+    "batch_size": 256,
+    "eps_start": 0.85,
+    "eps_end": 0.01,
+    "eps_decay": 10,
+    "gamma": 0.9,
+    "num_episodes": 51,
+    "target_update": 10,
+}
 
-# Log device type used for training
-run["environment/device"] = device
+# (neptune) Log dict as parameters
+run["training/parameters"] = parameters
 
-# Replay Memory
-Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward'))
+gif.options.matplotlib["dpi"] = 300
+steps_done = 0
+episode_durations = []
+
+Transition = namedtuple("Transition",
+                        ("state", "action", "next_state", "reward"))
+
+resize = T.Compose([T.ToPILImage(),
+                    T.Resize(40, interpolation=Image.CUBIC),
+                    T.ToTensor()])
 
 
 class ReplayMemory(object):
@@ -51,9 +66,7 @@ class ReplayMemory(object):
         return len(self.memory)
 
 
-# DQN algorithm
 class DQN(nn.Module):
-
     def __init__(self, h, w, outputs):
         super(DQN, self).__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=5, stride=2)
@@ -78,24 +91,12 @@ class DQN(nn.Module):
         return self.head(x.view(x.size(0), -1))
 
 
-# Input extraction
-resize = T.Compose([T.ToPILImage(),
-                    T.Resize(40, interpolation=Image.CUBIC),
-                    T.ToTensor()])
-
-
-def get_cart_location(screen_width):
-    world_width = env.x_threshold * 2
-    scale = screen_width / world_width
-    return int(env.state[0] * scale + screen_width / 2.0)  # MIDDLE OF CART
-
-
-def get_screen():
-    screen = env.render(mode='rgb_array').transpose((2, 0, 1))
+def _get_screen():
+    screen = env.render(mode="rgb_array").transpose((2, 0, 1))
     _, screen_height, screen_width = screen.shape
     screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
     view_width = int(screen_width * 0.6)
-    cart_location = get_cart_location(screen_width)
+    cart_location = _get_cart_location(screen_width)
     if cart_location < view_width // 2:
         slice_range = slice(view_width)
     elif cart_location > (screen_width - view_width // 2):
@@ -109,32 +110,59 @@ def get_screen():
     return resize(screen).unsqueeze(0)
 
 
-def env_start_screen():
+def _get_cart_location(screen_width):
+    world_width = env.x_threshold * 2
+    scale = screen_width / world_width
+    return int(env.state[0] * scale + screen_width / 2.0)
+
+
+@gif.frame
+def _get_screen_as_ax(screen):
     plt.figure()
     _, ax = plt.subplots(1, 1,)
     ax.imshow(
-        get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
-        interpolation='none'
+        screen.cpu().squeeze(0).permute(1, 2, 0).numpy(),
+        interpolation="none"
     )
     ax.axis("off")
-    run["visualizations/start_screen"].upload(neptune.types.File.as_image(ax.figure))
-    plt.close("all")
 
-# Training
-BATCH_SIZE = 128
-GAMMA = 0.999
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 200
-TARGET_UPDATE = 10
+
+def _get_env_start_screen():
+    plt.figure()
+    _, ax = plt.subplots(1, 1,)
+    ax.imshow(
+        _get_screen().cpu().squeeze(0).permute(1, 2, 0).numpy(),
+        interpolation="none"
+    )
+    ax.axis("off")
+    return ax.figure
+
+
+def _plot_durations():
+    run["training/episode/duration"].log(value=episode_durations[-1], step=len(episode_durations))
+    avg = np.array(episode_durations).sum() / len(episode_durations)
+    run["training/episode/avg_duration"].log(value=float(avg), step=len(episode_durations))
+
+
+# (neptune) Log environment info as it's defined
+env_name = "CartPole-v0"
+rnd_seed = np.random.randint(low=1000000)
+
+env = gym.make(env_name).unwrapped
+env.seed(rnd_seed)
+
+run["training/env_name"] = env_name
+run["training/parameters/seed"] = rnd_seed
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+run["training/environment/device_name"] = device
 
 env.reset()
-init_screen = get_screen()
+init_screen = _get_screen()
 _, _, screen_height, screen_width = init_screen.shape
 
-# Get number of actions from gym action space
+# (neptune) Log agent metadata: number of actions from gym action space
 n_actions = env.action_space.n
-
 run["agent/n_actions"] = n_actions
 
 policy_net = DQN(screen_height, screen_width, n_actions).to(device)
@@ -144,44 +172,29 @@ target_net.eval()
 
 optimizer = optim.RMSprop(policy_net.parameters())
 
-replay_mem = 10000
-
-memory = ReplayMemory(replay_mem)
-run["agent/replay_memory/size"] = replay_mem
-
-steps_done = 0
+# (neptune) Add more parameters to the "training/parameters" namespace
+replay_memory = 10000
+memory = ReplayMemory(replay_memory)
+run["training/parameters/replay_memory_size"] = replay_memory
 
 
 def select_action(state):
     global steps_done
     sample = random.random()
-    eps_threshold = EPS_END + (EPS_START - EPS_END) * \
-        math.exp(-1. * steps_done / EPS_DECAY)
+    eps_threshold = parameters["eps_end"] + (parameters["eps_start"] - parameters["eps_end"]) * \
+        math.exp(-1. * steps_done / parameters["eps_decay"])
     steps_done += 1
     if sample > eps_threshold:
         with torch.no_grad():
-            # t.max(1) will return largest column value of each row.
-            # second column on max result is index of where max element was
-            # found, so we pick action with the larger expected reward.
             return policy_net(state).max(1)[1].view(1, 1)
     else:
         return torch.tensor([[random.randrange(n_actions)]], device=device, dtype=torch.long)
 
 
-episode_durations = []
-
-
-def plot_durations():
-    run["training/episode/duration"].log(value=episode_durations[-1], step=len(episode_durations))
-    avg = np.array(episode_durations).sum() / len(episode_durations)
-    run["training/episode/avg_duration"].log(value=float(avg), step=len(episode_durations))
-
-
-# Training loop
 def optimize_model():
-    if len(memory) < BATCH_SIZE:
+    if len(memory) < parameters["batch_size"]:
         return
-    transitions = memory.sample(BATCH_SIZE)
+    transitions = memory.sample(parameters["batch_size"])
     batch = Transition(*zip(*transitions))
     non_final_mask = torch.tensor(
         tuple(
@@ -200,17 +213,18 @@ def optimize_model():
     action_batch = torch.cat(batch.action)
     reward_batch = torch.cat(batch.reward)
     state_action_values = policy_net(state_batch).gather(1, action_batch)
-    next_state_values = torch.zeros(BATCH_SIZE, device=device)
+    next_state_values = torch.zeros(parameters["batch_size"], device=device)
     next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0].detach()
-    expected_state_action_values = (next_state_values * GAMMA) + reward_batch
+    expected_state_action_values = (next_state_values * parameters["gamma"]) + reward_batch
 
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
-    run["training/criterion"] = "SmoothL1Loss"
+    run["training/parameters/criterion"] = "SmoothL1Loss"
+
+    # (neptune) Log loss, have it as a chart in neptune
     run["training/loss"].log(float(loss.detach().cpu().numpy()))
 
-    # Optimize the model
     optimizer.zero_grad()
     loss.backward()
     for param in policy_net.parameters():
@@ -218,50 +232,75 @@ def optimize_model():
     optimizer.step()
 
 
-# Below, you can find the main training loop.
-num_episodes = 50
-run["training/params/num_episodes"] = num_episodes
-
-for i_episode in range(num_episodes):
-    # Initialize the environment and state
+# Main training loop
+for i_episode in range(parameters["num_episodes"]):
     env.reset()
-    env_start_screen()
-    last_screen = get_screen()
-    current_screen = get_screen()
+
+    # (neptune) Log single image
+    if i_episode == 0:
+        run["visualizations/start_screen"].upload(neptune.types.File.as_image(_get_env_start_screen()))
+    last_screen = _get_screen()
+    current_screen = _get_screen()
     state = current_screen - last_screen
     cum_reward = 0
+    frames = []
     for t in count():
-        # Select and perform an action
+        frame = _get_screen_as_ax(current_screen)
+        frames.append(frame)
+
+        # (neptune) What my agent is looking at? Log series of images.
+        if i_episode % 10 == 0:
+            input_screen = state.detach().cpu().numpy().squeeze()
+            input_screen = (input_screen - input_screen.min()) / (input_screen.max() - input_screen.min() + 0.000001)
+            input_screen = np.transpose(input_screen, (1, 2, 0))
+
+            run["visualizations/episode_{}/input_screens".format(i_episode)].log(
+                neptune.types.File.as_image(input_screen)
+            )
+
         action = select_action(state)
         _, reward, done, _ = env.step(action.item())
         cum_reward += reward
         reward = torch.tensor([reward], device=device)
 
-        # Observe new state
         last_screen = current_screen
-        current_screen = get_screen()
+        current_screen = _get_screen()
         if not done:
             next_state = current_screen - last_screen
         else:
             next_state = None
 
-        # Store the transition in memory
         memory.push(state, action, next_state, reward)
-
-        # Move to the next state
         state = next_state
 
-        # Perform one step of the optimization (on the policy network)
         optimize_model()
         if done:
             episode_durations.append(t + 1)
-            plot_durations()
-            run["training/episode_reward"].log(value=cum_reward, step=i_episode)
+            _plot_durations()
+
+            # (neptune) Log reward as series of numbers
+            run["training/episode/reward"].log(value=cum_reward, step=i_episode)
+            if i_episode % 10 == 0:
+                frames_path = "episode_{}.gif".format(i_episode)
+                gif.save(
+                    frames,
+                    frames_path,
+                    duration=int(len(frames)/10),
+                    unit="s",
+                    between="startend"
+                )
+
+                # (neptune) Log gif to see episode recording
+                run["visualizations/episode_{}/episode_recording".format(i_episode)].upload(
+                    neptune.types.File(frames_path)
+                )
+                plt.close("all")
             break
-    # Update the target network, copying all weights and biases in DQN
-    if i_episode % TARGET_UPDATE == 0:
+    if i_episode % parameters["target_update"] == 0:
         target_net.load_state_dict(policy_net.state_dict())
 
-print('Complete')
-env.render()
 env.close()
+
+# (neptune) Log model weights
+torch.save(policy_net.state_dict(), "policy_net.pth")
+run["agent/policy_net"].upload("policy_net.pth")
