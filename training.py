@@ -27,19 +27,20 @@ run = neptune.init(
 )
 
 parameters = {
-    "batch_size": 256,
-    "eps_start": 0.85,
+    "batch_size": 64,
+    "eps_start": 0.7,
     "eps_end": 0.01,
     "eps_decay": 10,
-    "gamma": 0.8,
+    "gamma": 0.99,
     "num_episodes": 51,
     "target_update": 10,
 }
 
-run["training/parameters/criterion"] = "SmoothL1Loss"
-
 # (neptune) Log dict as parameters
 run["training/parameters"] = parameters
+
+# (neptune) You can add more parameters on the way
+run["training/parameters/criterion"] = "SmoothL1Loss"
 
 gif.options.matplotlib["dpi"] = 300
 steps_done = 0
@@ -140,20 +141,20 @@ def _get_env_start_screen():
     return ax.figure
 
 
+# (neptune) Log metrics. In this example episode durations
 def _plot_durations():
     run["training/episode/duration"].log(value=episode_durations[-1], step=len(episode_durations))
     avg = np.array(episode_durations).sum() / len(episode_durations)
     run["training/episode/avg_duration"].log(value=float(avg), step=len(episode_durations))
 
 
-# (neptune) Log environment info as it's defined
+# (neptune) Log environment info
 env_name = "CartPole-v0"
 rnd_seed = np.random.randint(low=1000000)
+run["training/env_name"] = env_name
 
 env = gym.make(env_name).unwrapped
 env.seed(rnd_seed)
-
-run["training/env_name"] = env_name
 run["training/parameters/seed"] = rnd_seed
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -280,6 +281,7 @@ for i_episode in range(parameters["num_episodes"]):
 
             # (neptune) Log reward as series of numbers
             run["training/episode/reward"].log(value=cum_reward, step=i_episode)
+
             if i_episode % 10 == 0:
                 frames_path = "episode_{}.gif".format(i_episode)
                 gif.save(
