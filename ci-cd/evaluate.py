@@ -47,7 +47,7 @@ eval_episodes = 5
 run["evaluation/n_episodes"] = eval_episodes
 
 # (neptune) Upload evaluation script as separate file
-run["evaluation/script"].upload("evaluate.py")
+run["evaluation/script"].upload("ci-cd/evaluate.py")
 
 # Run evaluation logic
 steps_done = 0

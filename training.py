@@ -27,9 +27,9 @@ run = neptune.init(
 )
 
 parameters = {
-    "batch_size": 64,
-    "eps_start": 0.7,
-    "eps_end": 0.01,
+    "batch_size": 128,
+    "eps_start": 0.73,
+    "eps_end": 0.02,
     "eps_decay": 10,
     "gamma": 0.99,
     "num_episodes": 51,
