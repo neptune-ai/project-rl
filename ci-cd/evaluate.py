@@ -46,7 +46,7 @@ n_actions = run["agent/n_actions"].fetch()
 eval_episodes = 5
 run["evaluation/n_episodes"] = eval_episodes
 
-# (neptune) Upload this file as separate source
+# (neptune) Upload evaluation script as separate file
 run["evaluation/script"].upload("evaluate.py")
 
 
