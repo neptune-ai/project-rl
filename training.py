@@ -36,6 +36,8 @@ parameters = {
     "target_update": 10,
 }
 
+run["training/parameters/criterion"] = "SmoothL1Loss"
+
 # (neptune) Log dict as parameters
 run["training/parameters"] = parameters
 
@@ -219,8 +221,6 @@ def optimize_model():
 
     criterion = nn.SmoothL1Loss()
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
-
-    run["training/parameters/criterion"] = "SmoothL1Loss"
 
     # (neptune) Log loss, have it as a chart in neptune
     run["training/loss"].log(float(loss.detach().cpu().numpy()))
