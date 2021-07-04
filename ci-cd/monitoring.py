@@ -11,13 +11,13 @@ project = neptune.get_project(
 
 # Find run with "in-prod" tag
 runs_table_df = project.fetch_runs_table(tag="in-prod").to_pandas()
-best_run_id = runs_table_df["sys/id"].values[0]
+run_id = runs_table_df["sys/id"].values[0]
 
 # Resume run
 run = neptune.init(
     api_token=os.getenv('NEPTUNE_API_TOKEN'),
     project="common/project-rl",
-    run=best_run_id,
+    run=run_id,
 )
 
 # Run monitoring logic
