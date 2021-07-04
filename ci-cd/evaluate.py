@@ -2,9 +2,7 @@
 # https://github.com/pytorch/tutorials/blob/master/intermediate_source/reinforcement_q_learning.py
 # date accessed: 2021.06.30
 
-import math
 import os
-import random
 from collections import namedtuple
 from itertools import count
 
@@ -33,13 +31,24 @@ run = neptune.init(
     api_token=os.getenv("NEPTUNE_API_TOKEN"),
     project="common/project-rl",
     run=run_id,
+    monitoring_namespace="evaluation/monitoring",
 )
 
 # (neptune) Download agent
 run["agent/policy_net"].download("policy_net.pth")
 
-# (neptune) Download parameters
-parameters = run["training/parameters"].fetch()["training"]["parameters"]
+# (neptune) Fetch environment name, random seed number of actions in the env
+env_name = run["training/env_name"].fetch()
+rnd_seed = run["training/parameters/seed"].fetch()
+n_actions = run["agent/n_actions"].fetch()
+
+# (neptune) Set number of episodes for evaluation and log in under separate namespace dedicated to evaluation
+eval_episodes = 5
+run["evaluation/n_episodes"] = eval_episodes
+
+# (neptune) Upload this file as separate source
+run["evaluation/script"].upload("evaluate.py")
+
 
 # Run evaluation logic
 steps_done = 0
@@ -101,18 +110,15 @@ def _get_cart_location(screen_width):
     scale = screen_width / world_width
     return int(env.state[0] * scale + screen_width / 2.0)
 
-env_name = "CartPole-v0"
-rnd_seed = np.random.randint(low=1000000)
 
 env = gym.make(env_name).unwrapped
 env.seed(rnd_seed)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 env.reset()
+
 init_screen = _get_screen()
 _, _, screen_height, screen_width = init_screen.shape
-
-n_actions = env.action_space.n
 
 policy_net = DQN(screen_height, screen_width, n_actions).to(device)
 policy_net.load_state_dict(torch.load("policy_net.pth"))
@@ -121,22 +127,12 @@ policy_net.eval()
 
 def select_action(state):
     global steps_done
-    sample = random.random()
-    eps_threshold = parameters["eps_end"] + (parameters["eps_start"] - parameters["eps_end"]) * \
-        math.exp(-1. * steps_done / parameters["eps_decay"])
     steps_done += 1
-    if sample > eps_threshold:
-        with torch.no_grad():
-            return policy_net(state).max(1)[1].view(1, 1)
-    else:
-        return torch.tensor([[random.randrange(n_actions)]], device=device, dtype=torch.long)
+    with torch.no_grad():
+        return policy_net(state).max(1)[1].view(1, 1)
 
 
 # Main training loop
-eval_episodes = 5
-
-# (neptune) Log evaluation parameters under "evaluation" namespace
-run["evaluation/n_episodes"] = eval_episodes
 for i_episode in range(eval_episodes):
     env.reset()
 
