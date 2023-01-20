@@ -3,6 +3,7 @@
 # date accessed: 2021.06.30
 
 import os
+import sys
 from collections import namedtuple
 from itertools import count
 
@@ -15,49 +16,49 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from PIL import Image
 
-# (neptune) Fetch project
-project = neptune.get_project(
+# (Neptune) Set environment variable
+os.environ["NEPTUNE_PROJECT"] = "common/project-rl"
+
+# (Neptune) Fetch project
+project = neptune.init_project(
     api_token=os.getenv("NEPTUNE_API_TOKEN"),
-    name="common/project-rl",
 )
 
-# (neptune) Find latest run
+# (Neptune) Find latest run
 runs_table_df = project.fetch_runs_table().to_pandas()
 runs_table_df = runs_table_df.sort_values(by="sys/creation_time", ascending=False)
 run_id = runs_table_df["sys/id"].values[0]
 
-# (neptune) Resume run
-run = neptune.init(
+# (Neptune) Resume run
+run = neptune.init_run(
     api_token=os.getenv("NEPTUNE_API_TOKEN"),
-    project="common/project-rl",
-    run=run_id,
+    with_id=run_id,
     monitoring_namespace="evaluation/monitoring",
 )
 
-# (neptune) Download agent
-run["agent/policy_net"].download("policy_net.pth")
+# (Neptune) Initialize model version created by the run
+model_version = neptune.init_model_version(with_id=run["training/model/id"].fetch())
 
-# (neptune) Fetch environment name, random seed number of actions in the env
+# (Neptune) Download agent from model repository
+model_version["weights"].download("policy_net.pth")
+
+# (Neptune) Fetch environment name and number of actions in the env
 env_name = run["training/env_name"].fetch()
-rnd_seed = run["training/parameters/seed"].fetch()
-n_actions = run["agent/n_actions"].fetch()
+n_actions = model_version["n_actions"].fetch()
 
-# (neptune) Set number of episodes for evaluation and log in under separate namespace dedicated to evaluation
+# (Neptune) Set number of episodes for evaluation and log in under separate namespace dedicated to evaluation
 eval_episodes = 5
 run["evaluation/n_episodes"] = eval_episodes
 
-# (neptune) Upload evaluation script as separate file
-run["evaluation/script"].upload("ci-cd/evaluate.py")
+# (Neptune) Upload evaluation script as separate file
+run["evaluation/script"].upload(sys.argv[0])
 
 # Run evaluation logic
 steps_done = 0
 
-Transition = namedtuple("Transition",
-                        ("state", "action", "next_state", "reward"))
+Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
 
-resize = T.Compose([T.ToPILImage(),
-                    T.Resize(40, interpolation=Image.CUBIC),
-                    T.ToTensor()])
+resize = T.Compose([T.ToPILImage(), T.Resize(40, interpolation=Image.BICUBIC), T.ToTensor()])
 
 
 class DQN(nn.Module):
@@ -72,6 +73,7 @@ class DQN(nn.Module):
 
         def conv2d_size_out(size, kernel_size=5, stride=2):
             return (size - (kernel_size - 1) - 1) // stride + 1
+
         convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
         convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
         linear_input_size = convw * convh * 32
@@ -86,9 +88,9 @@ class DQN(nn.Module):
 
 
 def _get_screen():
-    screen = env.render(mode="rgb_array").transpose((2, 0, 1))
+    screen = env.render().transpose((2, 0, 1))
     _, screen_height, screen_width = screen.shape
-    screen = screen[:, int(screen_height*0.4):int(screen_height * 0.8)]
+    screen = screen[:, int(screen_height * 0.4) : int(screen_height * 0.8)]
     view_width = int(screen_width * 0.6)
     cart_location = _get_cart_location(screen_width)
     if cart_location < view_width // 2:
@@ -96,8 +98,7 @@ def _get_screen():
     elif cart_location > (screen_width - view_width // 2):
         slice_range = slice(-view_width, None)
     else:
-        slice_range = slice(cart_location - view_width // 2,
-                            cart_location + view_width // 2)
+        slice_range = slice(cart_location - view_width // 2, cart_location + view_width // 2)
     screen = screen[:, :, slice_range]
     screen = np.ascontiguousarray(screen, dtype=np.float32) / 255
     screen = torch.from_numpy(screen)
@@ -110,11 +111,10 @@ def _get_cart_location(screen_width):
     return int(env.state[0] * scale + screen_width / 2.0)
 
 
-env = gym.make(env_name).unwrapped
-env.seed(rnd_seed)
+env = gym.make(env_name, render_mode="rgb_array").unwrapped
+env.reset()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-env.reset()
 
 init_screen = _get_screen()
 _, _, screen_height, screen_width = init_screen.shape
@@ -132,35 +132,64 @@ def select_action(state):
 
 
 # Main training loop
-for i_episode in range(eval_episodes):
+frames = []
+
+for _ in range(eval_episodes):
     env.reset()
 
     last_screen = _get_screen()
     current_screen = _get_screen()
     state = current_screen - last_screen
     cum_reward = 0
-    frames = []
-    for t in count():
+    for _ in count():
         action = select_action(state)
-        _, reward, done, _ = env.step(action.item())
+        _, reward, done, _, _ = env.step(action.item())
         cum_reward += reward
         reward = torch.tensor([reward], device=device)
 
         last_screen = current_screen
         current_screen = _get_screen()
-        if not done:
-            next_state = current_screen - last_screen
-        else:
-            next_state = None
-
+        next_state = None if done else current_screen - last_screen
         state = next_state
 
         if done:
-            # (neptune) Log evaluation metrics
-            run["evaluation/episode/reward"].log(value=cum_reward, step=i_episode)
+            # (Neptune) Log evaluation metrics
+            run["evaluation/episode/reward"].append(value=cum_reward)
+            model_version["evaluation/reward"].append(value=cum_reward)
             break
 
 env.close()
 
-# (neptune) Append tag "evaluated" to the run
+model_version.sync()
+
+# (Neptune) Compare against production model
+with neptune.init_model(with_id="PROJRL-CART") as model:
+    model_versions_df = model.fetch_model_versions_table().to_pandas()
+
+production_models = model_versions_df[model_versions_df["sys/stage"] == "production"]["sys/id"]
+assert (
+    len(production_models) == 1
+), f"Multiple model versions found in production: {production_models.values}"
+
+prod_model_id = production_models.values[0]
+print(f"Current model in production: {prod_model_id}")
+
+prod_model = neptune.init_model_version(with_id=prod_model_id)
+prod_model_avg_reward = prod_model["evaluation/reward"].fetch_values()["value"].mean()
+challenger_model_avg_reward = model_version["evaluation/reward"].fetch_values()["value"].mean()
+
+print(
+    f"Production model average reward: {prod_model_avg_reward}\nChallenger model acerage reward: {challenger_model_avg_reward}"
+)
+
+if challenger_model_avg_reward > prod_model_avg_reward:
+    print("Promoting challenger to production")
+    prod_model.change_stage("archived")
+    model_version.change_stage("production")
+else:
+    print("Archiving challenger model")
+    model_version.change_stage("archived")
+
+# (Neptune) Append tag "evaluated" to the run and model
 run["sys/tags"].add("evaluated")
+model_version["sys/tags"].add("evaluated")
