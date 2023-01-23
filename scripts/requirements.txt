@@ -1,0 +1,10 @@
+gif
+gym
+matplotlib
+neptune_client
+numpy
+Pillow
+pygame
+tk
+torch
+torchvision
