@@ -20,9 +20,7 @@ from PIL import Image
 os.environ["NEPTUNE_PROJECT"] = "common/project-rl"
 
 # (Neptune) Fetch project
-project = neptune.init_project(
-    api_token=os.getenv("NEPTUNE_API_TOKEN"),
-)
+project = neptune.init_project()
 
 # (Neptune) Find latest run
 runs_table_df = project.fetch_runs_table().to_pandas()
@@ -39,7 +37,7 @@ run = neptune.init_run(
 # (Neptune) Initialize model version created by the run
 model_version = neptune.init_model_version(with_id=run["training/model/id"].fetch())
 
-# (Neptune) Download agent from model repository
+# (Neptune) Download trained agent from model repository
 model_version["weights"].download("policy_net.pth")
 
 # (Neptune) Fetch environment name and number of actions in the env
@@ -51,7 +49,7 @@ eval_episodes = 5
 run["evaluation/n_episodes"] = eval_episodes
 
 # (Neptune) Upload evaluation script as separate file
-run["evaluation/script"].upload(sys.argv[0])
+run["evaluation/script"].upload(sys.argv[0])  # sys.argv[0] returns the path of the current script
 
 # Run evaluation logic
 steps_done = 0
@@ -132,8 +130,6 @@ def select_action(state):
 
 
 # Main training loop
-frames = []
-
 for _ in range(eval_episodes):
     env.reset()
 
@@ -172,14 +168,14 @@ assert (
 ), f"Multiple model versions found in production: {production_models.values}"
 
 prod_model_id = production_models.values[0]
-print(f"Current model in production: {prod_model_id}")
+print(f"Current champion model: {prod_model_id}")
 
 prod_model = neptune.init_model_version(with_id=prod_model_id)
 prod_model_avg_reward = prod_model["evaluation/reward"].fetch_values()["value"].mean()
 challenger_model_avg_reward = model_version["evaluation/reward"].fetch_values()["value"].mean()
 
 print(
-    f"Production model average reward: {prod_model_avg_reward}\nChallenger model acerage reward: {challenger_model_avg_reward}"
+    f"Champion model average reward: {prod_model_avg_reward}\nChallenger model acerage reward: {challenger_model_avg_reward}"
 )
 
 if challenger_model_avg_reward > prod_model_avg_reward:

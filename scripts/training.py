@@ -2,6 +2,7 @@
 # https://github.com/pytorch/tutorials/blob/master/intermediate_source/reinforcement_q_learning.py
 # date accessed: 2021.06.30
 
+import contextlib
 import math
 import os
 import random
@@ -228,8 +229,6 @@ def optimize_model():
 
 
 # Main training loop
-import contextlib
-
 for i_episode in range(parameters["num_episodes"]):
     env.reset()
 
